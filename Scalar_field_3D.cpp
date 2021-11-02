@@ -14,11 +14,6 @@
 
 using namespace std;
 
-class Data {
-        int    key;
-        double value;
-    };
-
 template <class T>
 class Field
 {
@@ -52,7 +47,7 @@ class Field
     {
       std::ofstream file1;
       file1.open("lattice_data.bin", ios::out | ios::binary);
-      file1.write ((char*)&data_, sizeof(data_));
+      file1.write ((char*)&data_, data_.size()*sizeof(double));
       file1.close();
       cout << "Lattice saved" << endl;
     }
@@ -62,7 +57,7 @@ class Field
       std::vector<T> vec;
       std::ifstream file2;
       file2.open("lattice_data.bin", ios::in | ios::binary);
-      file2.read((char*)&vec, sizeof(data_));
+      file2.read((char*)&vec, data_.size()*sizeof(double));
       data_ = vec;
       file2.close();
       cout << "Lattice loaded" << endl;
@@ -78,18 +73,45 @@ class Field
     T& operator() (int x, int y, int z)       { return data_[index_(x,y,z)]; }
 }; 
 
-
-double action(Field<double> sigma, int i, int j, int k, double m, double a)
+class Action
 {
-  return ((6.0/pow(a,2.0) + pow(m,2.0))*pow(sigma(i,j,k),2.0)*0.5*pow(a,3.0) 
-      - (sigma(i+1,j,k) + sigma(i-1,j,k) 
-      + sigma(i,j + 1,k) + sigma(i,j-1,k) 
-      + sigma(i,j,k + 1) + sigma(i,j,k - 1))*(a*sigma(i,j,k)*0.5));
-}
+    private:
+        double ma_;
+    public:
+        Action(double ma): ma_(ma){}
+
+        double local_S(Field<double>& s, int i, int j, int k)
+        {
+            return 0.5*(6.0 + ma_*ma_)*s(i,j,k)*s(i,j,k)
+                    - (s(i+1,j,k) + s(i-1,j,k) 
+                    + s(i,j+1,k) + s(i,j-1,k) 
+                    + s(i,j,k+1) + s(i,j,k-1))*s(i,j,k);
+        }
+        double global_S(Field<double>& s)
+        {
+            double g_S = 0.0;
+
+            for(int i = 0; i < s.get_lat_dim()[0]; i++)
+            {
+                for(int j = 0; j < s.get_lat_dim()[1]; j++)
+                {
+                    for(int k = 0; k < s.get_lat_dim()[2]; k++)
+                    {
+                        g_S = g_S + 0.5*((6.0 + ma_*ma_)*s(i,j,k)*s(i,j,k)
+                        - (s(i+1,j,k) + s(i-1,j,k) 
+                        + s(i,j + 1,k) + s(i,j-1,k) 
+                        + s(i,j,k + 1) + s(i,j,k - 1))*s(i,j,k));
+                    }
+                }
+            }
+            return g_S;
+        }
+
+};
 
 
 template <typename T>
-void update(double a, double m, double delta, Field<T>& sigma)
+void update(Field<T>& sigma, Action& S, double delta)
 {
   for(int i=0;i<sigma.get_lat_dim()[0];i++)
   {
@@ -98,7 +120,7 @@ void update(double a, double m, double delta, Field<T>& sigma)
       for(int k=0;k<sigma.get_lat_dim()[2];k++)
       {
         // Compute the current action at lattice site n
-        double s_old = action(sigma, i, j, k, m, a);
+        double s_old = S.local_S(sigma,i,j,k);
     
         double sigma_old = sigma(i,j,k);
         
@@ -106,7 +128,7 @@ void update(double a, double m, double delta, Field<T>& sigma)
         sigma(i,j,k) = sigma(i,j,k) + ((double) rand()/RAND_MAX - 0.5)*delta*2.0;
 
         // Compute difference between old action and new action
-        double ds = action(sigma, i, j, k, m, a) - s_old;
+        double ds = S.local_S(sigma,i,j,k) - s_old;
 
         // Compute probability
         double prob = std::min(1.0, exp(- double(ds)));
@@ -119,8 +141,6 @@ void update(double a, double m, double delta, Field<T>& sigma)
     }
   }
 }
-
-
 
 double twopoint(Field<double>& sigma, int t)
 {
@@ -138,7 +158,6 @@ double twopoint(Field<double>& sigma, int t)
   return phi_t*sigma(0,0,0);
 }
 
-
 double onepoint(Field<double>& sigma, int t)
 {
   double phit = 0;
@@ -153,37 +172,91 @@ double onepoint(Field<double>& sigma, int t)
 }
 
 
-
 int main(){
-  srand(time(NULL));
-  int n = 2;
-  // The size and dimension of the lattice is given by this vector
-  std::vector<int> latsize{n,n,n};
-  int size = int(pow(n,3));
-  // Initialize the lattice
-  Field<double> lattice(latsize, size);
+
+    srand(time(NULL));
+    int n = 12;
+    // The size and dimension of the lattice is given by this vector
+    std::vector<int> latsize{n,n,n};
+    int size = n*n*n;
+    // Initialize the lattice
+    Field<double> lattice(latsize, size);
+
+    // set simulation variables
+    double m = 0.1;      // mass
+    double delta = 2.0;  // configuration space range
+
+    int thermN = 1000;    // iterations for thermalization
+    int N = 1000;         // iterations for average
+    Action S(m);
 
 
+    
+    for(int l =0; l< 100; l++)
+    {
+        update(lattice, S, delta);
+    }
+
+    double g1 = S.global_S(lattice);
+    double l1 = S.local_S(lattice, 1,1,1);
+    lattice(1,1,1) = 1.0;
+    cout << S.global_S(lattice) - g1 << endl;
+    cout << S.local_S(lattice, 1,1,1) - l1 << endl;
 
 
+    // stores 2 point function at different times
+    std::vector<double> correlation2(n,0.0);
 
-  // set simulation variables
-  double a = 1.0;      // lattice spacing
-  double m = 0.5;      // mass
-  double delta = 3.75;  // configuration space range
+    // stores 1 point function at different times
+    std::vector<double> correlation1(n,0.0);
 
-  int thermN = 300;    // iterations for thermalization
+    ofstream file1 ("onept.txt"); //store data in txt file
+    ofstream file2 ("twopt.txt");
 
-  for(int l =0; l< thermN; l++)
-  {
-    update(a, m, delta, lattice);
-  }
+    for(int l =0; l< thermN; l++)
+    {
+      update(lattice, S, delta);
+      for(int t = 0; t < lattice.get_lat_dim()[2]; t++)
+      {
+        correlation2[t] = correlation2[t] + twopoint(lattice,t);
+        correlation1[t] = correlation1[t] + onepoint(lattice,t);
+      }
+      file1 << l << ", " << correlation1[0]/double(l + 1)<< "\n";
+      file2 << l << ", " << correlation2[0]/double(l + 1)<< "\n";
+    }
+    file1.close();
+    file2.close();
 
-  lattice.save_lattice();
+    
+    // Stores correlation functions at different times
+    std::vector<double> cor1(12,0.0);
+    std::vector<double> cor2(12,0.0);
+    double onept = 0.0;
+    for(int p = 0; p < N; p++)
+    {
+      for(int i = 0; i<5;i++)
+      {
+        update(lattice, S, delta);
+      }
 
-  Field<double> lattice1(latsize, size);
-  lattice1.load_lattice();
-  cout << lattice1(1,1,1) << endl;
-  
-  return 0;
+      for(int t = 0; t < lattice.get_lat_dim()[2]; t++)
+      {        
+        cor1[t] = cor1[t] + onepoint(lattice,t);
+        cor2[t] = cor2[t] + twopoint(lattice,t);
+      }
+    }
+
+    ofstream file3 ("cor1.txt");
+    ofstream file4 ("cor2.txt");
+
+    for(int t = 0; t < n; t++)
+    {
+        file3 << double(t) << ", " << cor1[t]/double(N) << "\n";
+        file4 << double(t) << ", " << cor2[t]/double(N) << "\n";
+    }
+    file3.close();
+    file4.close();
+    
+    
+    return 0;
 }
